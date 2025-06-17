@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase-server';
-import { db } from '@/lib/supabase-db';
 import { z } from 'zod';
 
 const updateHabitSchema = z.object({
@@ -9,18 +8,19 @@ const updateHabitSchema = z.object({
   icon: z.string().max(50).optional(),
   color: z.string().max(7).optional(),
   frequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'CUSTOM']).optional(),
-  frequencyConfig: z.object({}).optional(),
-  reminderEnabled: z.boolean().optional(),
-  reminderTime: z.string().optional(),
-  reminderMessage: z.string().optional(),
-  isArchived: z.boolean().optional(),
+  frequency_config: z.object({}).optional(),
+  reminder_enabled: z.boolean().optional(),
+  reminder_time: z.string().optional(),
+  reminder_message: z.string().optional(),
+  is_archived: z.boolean().optional(),
 });
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
@@ -31,7 +31,7 @@ export async function GET(
     const { data: habit, error } = await supabase
       .from('habits')
       .select('*, habit_completions(*)')
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('user_id', user.id)
       .single();
 
@@ -54,9 +54,10 @@ export async function GET(
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
@@ -67,14 +68,23 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updateHabitSchema.parse(body);
 
-    // Update habit directly - Supabase will handle user ownership via RLS
-    const updatedHabit = await db.habits.update(params.id, {
-      ...validatedData,
-      updated_at: new Date().toISOString(),
-    });
+    // Update habit
+    const { data: updatedHabit, error: updateError } = await supabase
+      .from('habits')
+      .update({
+        ...validatedData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .select()
+      .single();
 
-    if (!updatedHabit) {
-      return NextResponse.json({ error: 'Habit not found' }, { status: 404 });
+    if (updateError) {
+      if (updateError.code === 'PGRST116') {
+        return NextResponse.json({ error: 'Habit not found' }, { status: 404 });
+      }
+      throw updateError;
     }
 
     return NextResponse.json({ habit: updatedHabit });
@@ -96,9 +106,10 @@ export async function PATCH(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
@@ -106,14 +117,15 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Soft delete by archiving
-    const deletedHabit = await db.habits.update(params.id, {
-      is_archived: true,
-      updated_at: new Date().toISOString(),
-    });
+    // Delete habit
+    const { error: deleteError } = await supabase
+      .from('habits')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id);
 
-    if (!deletedHabit) {
-      return NextResponse.json({ error: 'Habit not found' }, { status: 404 });
+    if (deleteError) {
+      throw deleteError;
     }
 
     return NextResponse.json({ message: 'Habit deleted successfully' });
